@@ -1,5 +1,4 @@
 import math
-import statistics as stat
 import numpy as np
 import pandas as pd
 import random
@@ -179,83 +178,93 @@ def main():
     # print(f"Distance matrix between clusters: {problem_data['cluster_distances']}")
     return problem_data
 
+def results(problem_data, cluster_routes_per_vehicle, intra_cluster_routes):
+    """
+    Based on the cluster routes per vehicle and the intra-cluster routes,
+    the total routes per vehicle are calculated. Then, the total distances of
+    these routes are calculated.
+    """
+    vehicle_routes = {}
+    for vehicle in cluster_routes_per_vehicle:
+        vehicle_route = []
+        cluster_route = cluster_routes_per_vehicle[vehicle]
+        for cluster in cluster_route:
+            vehicle_route.extend(intra_cluster_routes[cluster])
+        vehicle_routes[vehicle] = vehicle_route
+        vehicle_routes[vehicle].append(1)  # End the vehicle route at the depot
+
+    vehicle_distances = {}
+    for vehicle in vehicle_routes:
+        distance = 0.0
+        vehicle_route = vehicle_routes[vehicle]
+        for i in range(len(vehicle_route) - 1):
+            customer = vehicle_route[i]
+            next_customer = vehicle_route[i + 1]
+            distance += problem_data['d'].loc[customer, next_customer]
+        vehicle_distances[vehicle] = float(distance)
+
+    return vehicle_routes, vehicle_distances
+
+def create_initial_solution(problem_data):
+    """
+    Assign clusters to vehicles by assigning the closest cluster to each vehicle's
+    current location. This is a greedy assignment of clusters to vehicles to create
+    an initial solution. This does not yet take into account vehicle capacities,
+    because the demand object is empty somehow. Once, this issue is fixed, it should
+    not be too difficult to implement this here. Subtract the total demand of a cluster
+    from the remaining capacity of a vehicle, and only add the closest cluster, if this
+    doesn't exceed the vehicle capacities. If it does, add the next closest cluster that
+    doesn't exceed vehicle capacities if any.
+    """
+    clusters_to_assign = problem_data['R']
+    cluster_routes_per_vehicle = {}
+    for i in problem_data['K']:
+        cluster_routes_per_vehicle[f"Vehicle {problem_data['K'][i]}"] = [problem_data['r0']]
+    while len(clusters_to_assign) > 0:
+        for i in cluster_routes_per_vehicle:
+            current_location = cluster_routes_per_vehicle[i][-1]
+            if current_location in clusters_to_assign:
+                clusters_to_assign.remove(current_location)
+            distances = {}
+            if len(clusters_to_assign) > 0:
+                for cluster in clusters_to_assign:
+                    distances[cluster] = problem_data['cluster_distances'].loc[current_location, cluster]
+                closest_cluster = min(distances, key=distances.get)
+                cluster_routes_per_vehicle[i].append(closest_cluster)
+                clusters_to_assign.remove(closest_cluster)
+
+    """
+    Simple nearest-neighbor heuristic for finding a route within a cluster. At first, 
+    a random customer in a cluster is chosen. The route within this cluster starts at 
+    this random customer. Starting from this customer, the nearest neighbor is found 
+    and added to the route. This continues until all customers within a cluster are 
+    added to the route. This results in a dictionary of nearest-neighbor intra-cluster 
+    routes for all clusters that can be used for the initial solution.
+    """
+    intra_cluster_routes = {}
+    for cluster in problem_data['Cr']:
+        route = []
+        customers = problem_data['Cr'][cluster]
+        first_customer = random.choice(customers)
+        route.append(first_customer)
+        customers.remove(first_customer)
+        while len(customers) > 0:
+            distances = {}
+            for customer in customers:
+                distances[customer] = problem_data['d'].loc[route[-1], customer]
+            next_customer = min(distances, key=distances.get)
+            route.append(next_customer)
+            customers.remove(next_customer)
+        intra_cluster_routes[cluster] = route
+
+    vehicle_routes, vehicle_distances = results(problem_data, cluster_routes_per_vehicle, intra_cluster_routes)
+
+    return cluster_routes_per_vehicle, intra_cluster_routes, vehicle_routes, vehicle_distances
+
 problem_data = main()
+initial_cluster_routes_per_vehicle, initial_intra_cluster_routes, initial_vehicle_routes, initial_vehicle_distances = create_initial_solution(problem_data)
 
-"""
-Assign clusters to vehicles by assigning the closest cluster to each vehicle's 
-current location. This is a greedy assignment of clusters to vehicles to create 
-an initial solution. This does not yet take into account vehicle capacities, 
-because the demand object is empty somehow. Once, this issue is fixed, it should 
-not be too difficult to implement this here. Subtract the total demand of a cluster 
-from the remaining capacity of a vehicle, and only add the closest cluster, if this 
-doesn't exceed the vehicle capacities. If it does, add the next closest cluster that 
-doesn't exceed vehicle capacities if any.
-"""
-clusters_to_assign = problem_data['R']
-cluster_routes_per_vehicle = {}
-for i in problem_data['K']:
-    cluster_routes_per_vehicle[f"Vehicle {problem_data['K'][i]}"] = [problem_data['r0']]
-while len(clusters_to_assign) > 0:
-    for i in cluster_routes_per_vehicle:
-        current_location = cluster_routes_per_vehicle[i][-1]
-        if current_location in clusters_to_assign:
-            clusters_to_assign.remove(current_location)
-        distances = {}
-        if len(clusters_to_assign) > 0:
-            for cluster in clusters_to_assign:
-                distances[cluster] = problem_data['cluster_distances'].loc[current_location, cluster]
-            closest_cluster = min(distances, key=distances.get)
-            cluster_routes_per_vehicle[i].append(closest_cluster)
-            clusters_to_assign.remove(closest_cluster)
-print(f"Cluster routes per vehicle: {cluster_routes_per_vehicle}")
-
-"""
-Simple nearest-neighbor heuristic for finding a route within a cluster. At first, 
-a random customer in a cluster is chosen. The route within this cluster starts at 
-this random customer. Starting from this customer, the nearest neighbor is found 
-and added to the route. This continues until all customers within a cluster are 
-added to the route. This results in a dictionary of nearest-neighbor intra-cluster 
-routes for all clusters that can be used for the initial solution.
-"""
-routes = {}
-for cluster in problem_data['Cr']:
-    route = []
-    customers = problem_data['Cr'][cluster]
-    first_customer = random.choice(customers)
-    route.append(first_customer)
-    customers.remove(first_customer)
-    while len(customers) > 0:
-        distances = {}
-        for customer in customers:
-            distances[customer] = problem_data['d'].loc[route[-1], customer]
-        next_customer = min(distances, key=distances.get)
-        route.append(next_customer)
-        customers.remove(next_customer)
-    routes[cluster] = route
-print(f"Intra-cluster routes: {routes}")
-
-"""
-Based on the cluster routes per vehicle and the intra-cluster routes as calculated above, 
-below the total routes per vehicle are calculated. Then, the total distance of these 
-initial routes are calculated.
-"""
-vehicle_routes = {}
-for vehicle in cluster_routes_per_vehicle:
-    vehicle_route = []
-    cluster_route = cluster_routes_per_vehicle[vehicle]
-    for cluster in cluster_route:
-        vehicle_route.extend(routes[cluster])
-    vehicle_routes[vehicle] = vehicle_route
-    vehicle_routes[vehicle].append(1) # End the vehicle route at the depot
-print(f"Vehicle routes: {vehicle_routes}")
-
-vehicle_distances = {}
-for vehicle in vehicle_routes:
-    distance = 0.0
-    vehicle_route = vehicle_routes[vehicle]
-    for i in range(len(vehicle_route)-1):
-        customer = vehicle_route[i]
-        next_customer = vehicle_route[i+1]
-        distance += problem_data['d'].loc[customer, next_customer]
-    vehicle_distances[vehicle] = float(distance)
-print(f"Total distance per vehicle: {vehicle_distances}")
+print(f"Cluster routes per vehicle: {initial_cluster_routes_per_vehicle}")
+print(f"Intra-cluster routes: {initial_intra_cluster_routes}")
+print(f"Vehicle routes: {initial_vehicle_routes}")
+print(f"Total distance per vehicle: {initial_vehicle_distances}")
