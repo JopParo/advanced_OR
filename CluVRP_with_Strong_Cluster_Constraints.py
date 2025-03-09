@@ -2,6 +2,7 @@ import math
 import numpy as np
 import pandas as pd
 import random
+import copy
 
 def read_gvrp_file(filename):
     """
@@ -264,7 +265,54 @@ def create_initial_solution(problem_data):
 problem_data = main()
 initial_cluster_routes_per_vehicle, initial_intra_cluster_routes, initial_vehicle_routes, initial_vehicle_distances = create_initial_solution(problem_data)
 
-print(f"Cluster routes per vehicle: {initial_cluster_routes_per_vehicle}")
-print(f"Intra-cluster routes: {initial_intra_cluster_routes}")
-print(f"Vehicle routes: {initial_vehicle_routes}")
-print(f"Total distance per vehicle: {initial_vehicle_distances}")
+# print(f"Cluster routes per vehicle: {initial_cluster_routes_per_vehicle}")
+# print(f"Intra-cluster routes: {initial_intra_cluster_routes}")
+# print(f"Vehicle routes: {initial_vehicle_routes}")
+# print(f"Total distance per vehicle: {initial_vehicle_distances}")
+
+def tabu_str(route):
+    """
+    Create a unique string that defines a route to be stored in a tabu list.
+    """
+    tabu_str = '_'
+    for i in range(len(route)):
+        for j in route[i]:
+            tabu_str += f"{str(j)}_"
+    return tabu_str
+
+def tabu_search_intra_cluster_routes(initial_intra_cluster_routes, initial_vehicle_distances):
+    """
+    Optimize the initial solution by changing the intra-cluster routes. The initial instance
+    is the input. The function randomly picks a cluster and shuffles the order in which the customers
+    of that cluster are visited. If that decreases the total distance of the vehicles and this order
+    of customers was not yet in the tabu list, then the best known solution is updated. Right now,
+    there is not yet a maximum length to the tabu list. i represents how often the function randomly
+    picks a cluster to optimize. k represents how often it shuffles the order of customers within a cluster,
+    before accepting the best order. Note that this optimization only considers the order of customers
+    within a cluster, the so called intra-cluster routes. This function does not yet optimize the order
+    in which clusters are visisted or how the clusters are divided among the vehicles. These can be
+    implemented next and then combined to optimize the final result even more.
+    """
+    best_intra_cluster_routes = [[initial_intra_cluster_routes, sum(initial_vehicle_distances.values())]]
+    intra_cluster_routes = copy.deepcopy(initial_intra_cluster_routes)
+    problem_data = main()
+    i = 0
+    while i < 10000:
+        j = random.choice(problem_data['R'])
+        tabu_list = []
+        tabu_list.append(tabu_str(intra_cluster_routes))
+        k = 0
+        while k < 100:
+            random.shuffle(intra_cluster_routes[j])
+            if tabu_str(intra_cluster_routes) not in tabu_list:
+                tabu_list.append(tabu_str(intra_cluster_routes))
+                _, vehicle_distances = results(problem_data, initial_cluster_routes_per_vehicle, intra_cluster_routes)
+                if sum(vehicle_distances.values()) < best_intra_cluster_routes[-1][-1]:
+                    best_intra_cluster_routes.append([intra_cluster_routes, sum(vehicle_distances.values())])
+            k += 1
+        i += 1
+    return best_intra_cluster_routes
+
+best_intra_cluster_routes = tabu_search_intra_cluster_routes(initial_intra_cluster_routes, initial_vehicle_distances)
+print(f"Total distance at initial solution: {best_intra_cluster_routes[0][-1]}")
+print(f"Total distance after Tabu Search heuristic on intra-cluster routes: {best_intra_cluster_routes[-1][-1]}")
