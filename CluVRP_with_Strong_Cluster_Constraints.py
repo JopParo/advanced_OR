@@ -4,315 +4,375 @@ import pandas as pd
 import random
 import copy
 
-def read_gvrp_file(filename):
+'Reads the input file and stores every relevant information in a dictionary'
+def Read_gvrp_file(filename):
+    with open(filename, 'r') as file:
+        lines = file.readlines()
+    
+    nodes = {}      # Stores coordinates of nodes
+    clusters = {}   # Stores cluster -> list of nodes
+    demands = {}    # Stores demand per cluster
+    depot = None
+    vehicle_capacity = None
+    num_vehicles = None
+    
+    mode = None
+    cluster_id = 1  # Clusters start from 1
+
+    for line in lines:
+        parts = line.strip().split()
+        if not parts:
+            continue
+        if parts[0] == 'DIMENSION':
+            num_nodes = int(parts[-1])
+        elif parts[0] == 'VEHICLES':
+            num_vehicles = int(parts[-1])
+        elif parts[0] == 'CAPACITY':
+            vehicle_capacity = int(parts[-1])
+        elif parts[0] == 'NODE_COORD_SECTION':
+            mode = 'NODES'
+        elif parts[0] == 'GVRP_SET_SECTION':
+            mode = 'CLUSTERS'
+            cluster_id = 1  # Reset for clusters
+        elif parts[0] == 'DEMAND_SECTION':
+            mode = 'DEMANDS'
+            cluster_id = 1  # Reset for demand assignment
+        elif parts[0] == 'EOF':
+            break
+        elif mode == 'NODES':
+            node_id, x, y = map(int, parts)
+            nodes[node_id] = (x, y)
+
+        elif mode == 'CLUSTERS':
+            if cluster_id not in clusters:
+                clusters[cluster_id] = []
+            cluster_id
+            for value in parts[:-1]:  # Ignore the "-1" at the end
+                clusters[cluster_id].append(int(value))
+            clusters[cluster_id].pop(0)
+            cluster_id += 1
+        elif mode == 'DEMANDS':
+            demands[cluster_id] = int(parts[1])  # Assign demand to the cluster
+            cluster_id += 1  # Move to next cluster
+    distance_matrix = Compute_distance_matrix(nodes)
+    return nodes, clusters, demands, vehicle_capacity, num_vehicles, distance_matrix
+
+'Computes distances between given nodes according to the Euclidean formula'
+def Compute_distance_matrix(nodes):
+    num_nodes = len(nodes)
+    distance_matrix = np.zeros((num_nodes + 1, num_nodes + 1))
+    for i in nodes:
+        for j in nodes:
+            if i != j:
+                x1, y1 = nodes[i]
+                x2, y2 = nodes[j]
+                distance_matrix[i][j] = math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
+    return distance_matrix
+
+'Constructs a route inside each cluster starting at a random customer and using nearest neighbor'
+def Intra_cluster_route(cluster_nodes, distance_matrix):
+    if not cluster_nodes:
+        return []
+    start_node = random.choice(cluster_nodes)
+    route = [start_node]
+    unvisited = set(cluster_nodes)
+    unvisited.remove(start_node)
+    while unvisited:
+        last_node = route[-1]
+        nearest_node = min(unvisited, key=lambda node: distance_matrix[last_node][node])
+        route.append(nearest_node)
+        unvisited.remove(nearest_node)
+    return route
+
+'Creates an initial solution: adds closest cluster (centre) to current vehicle pos. respecting the capacity'
+def Initial_solution(nodes, clusters, demands, vehicle_capacity, num_vehicles, distance_matrix):
+    depot = 1
+    unvisited_clusters = set(clusters.keys())
+    vehicle_routes = [[] for _ in range(num_vehicles)]
+    for vehicle in range(num_vehicles):
+        current_location = depot
+        remaining_capacity = vehicle_capacity
+        vehicle_clusters = [depot]
+        while unvisited_clusters:
+            possible_clusters = [
+                c for c in unvisited_clusters if demands[c] <= remaining_capacity
+            ]
+            if not possible_clusters:
+                break
+            next_cluster = min(
+                possible_clusters, key=lambda c: distance_matrix[current_location][clusters[c][0]]
+            )
+            vehicle_clusters.append(next_cluster)
+            remaining_capacity -= demands[next_cluster]
+            current_location = clusters[next_cluster][-1]
+            unvisited_clusters.remove(next_cluster)
+        vehicle_clusters.append(depot)
+        vehicle_routes[vehicle] = vehicle_clusters
+    return vehicle_routes
+
+'Creates an random initial solution'
+def Random_initial_solution(nodes, clusters, demands, vehicle_capacity, num_vehicles, distance_matrix):
+    depot = 1
+
+    while True:
+        vehicle_routes = [[] for _ in range(num_vehicles)]
+        vehicle_loads = [0 for _ in range(num_vehicles)]
+        unvisited_clusters = list(clusters.keys())
+        random.shuffle(unvisited_clusters)
+        success = True
+
+        for cluster in unvisited_clusters:
+            assigned = False
+            vehicle_indices = list(range(num_vehicles))
+            random.shuffle(vehicle_indices)
+            for k in vehicle_indices:
+                if vehicle_loads[k] + demands[cluster] <= vehicle_capacity:
+                    if not vehicle_routes[k]:
+                        vehicle_routes[k].append(depot)
+                    vehicle_routes[k].append(cluster)
+                    vehicle_loads[k] += demands[cluster]
+                    assigned = True
+                    break
+            if not assigned:
+                success = False
+                break
+        if success:
+            for k in range(num_vehicles):
+                if vehicle_routes[k]:
+                    vehicle_routes[k].append(depot)
+                else:
+                    vehicle_routes[k] = [depot, depot]
+            return vehicle_routes
+
+'Prints a given solution'
+def Print_solution(solution, clusters):
+    for v, route in enumerate(solution):
+        formatted_route = [1]
+        for cluster in route[1:-1]:
+            if cluster in clusters:
+                formatted_route.append(clusters[cluster])
+            else:
+                formatted_route.append(cluster)
+        formatted_route.append(1)
+        print(f"Vehicle {v+1} Route: {formatted_route}")
+
+'Tweak Operator: Intra-route (cluster level) using heuristics "Relocate" and "Exchange"'
+def Intra_route(current_solution, clusters):
+    K = len(current_solution)
+    k = random.choice(range(K))
+    route = current_solution[k]
+    random_cluster = random.choice(route[1:-1])
+    cluster = clusters[random_cluster]
+    
+    if len(cluster) > 1:
+        heuristic = random.choice(["Relocate", "Exchange"])
+    else:
+        heuristic = "Relocate"
+    if heuristic == "Relocate":
+        random_customer = random.choice(cluster)
+        cluster.remove(random_customer)
+        random_index = random.randint(0, len(cluster))
+        cluster.insert(random_index, random_customer)
+        clusters[random_cluster] = cluster
+    if heuristic == "Exchange":
+        customer1, customer2 = random.sample(range(len(cluster)), 2)
+        cluster[customer1], cluster[customer2] = cluster[customer2], cluster[customer1]
+        clusters[random_cluster] = cluster
+    return current_solution
+
+'Tweak Operator: Inter-route (route level) using heuristics "Insert" and "Swap"'
+def Inter_route(current_solution, clusters, demands, vehicle_capacity):
+    K = len(current_solution)
+    receiving_k = list(range(K))
+    k = random.choice(range(K))
+    receiving_k.remove(k)
+    random_k = random.choice(receiving_k)
+    route = current_solution[k]
+    if len(route) > 2:
+        random_cluster = random.choice(route[1:-1])
+        heuristic = random.choice(["Insert", "Swap"])
+        if heuristic == "Insert":
+            if Route_demand(current_solution[random_k], clusters, demands) + demands[random_cluster] <= vehicle_capacity:
+                route = route[1:-1]
+                route.remove(random_cluster)
+                route.insert(0, 1)
+                route.append(1)
+                random_index = random.randint(1, len(current_solution[random_k]) - 1)
+                current_solution[random_k].insert(random_index, random_cluster)
+                current_solution[k] = route
+        if heuristic == "Swap":
+            receiving_route = current_solution[random_k]
+            if len(receiving_route) > 2:
+                random_cluster_receiving = random.choice(receiving_route[1:-1])
+                route = route[1:-1]
+                receiving_route = receiving_route[1:-1]
+                route.remove(random_cluster)
+                route.insert(0,1)
+                route.append(1)
+                receiving_route.remove(random_cluster_receiving)
+                receiving_route.insert(0,1)
+                receiving_route.append(1)
+                random_index = random.randint(1, len(receiving_route) - 1)
+                receiving_route.insert(random_index, random_cluster)
+                random_index = random.randint(1, len(route) - 1)
+                route.insert(random_index, random_cluster_receiving)
+                if Route_demand(route, clusters, demands) <= vehicle_capacity and Route_demand(receiving_route, clusters, demands) <= vehicle_capacity:
+                    current_solution[k] = route
+                    current_solution[random_k] = receiving_route
+    return current_solution
+
+'Tweak Operator: For a random route/vehicle changes the order of two random clusters'
+def Cluster_reordering(current_solution, clusters, distance_matrix):
+    K = len(current_solution)
+    k = random.choice(range(K))
+    route = current_solution[k]
+    if len(route) <= 3:
+        return current_solution
+    index_random_cluster1, index_random_cluster2 = random.sample(range(1, len(route) - 1), 2)
+    route[index_random_cluster1], route[index_random_cluster2] = route[index_random_cluster2], route[index_random_cluster1]
+    current_solution [k] = route
+    return current_solution
+
+'Calculates distance for a given route'
+def Calculate_route_distance(route, distance_matrix):
+    expanded_route = [route[0]]
+    for cluster_id in route[1:-1]:
+        expanded_route.extend(clusters[cluster_id])
+    expanded_route.append(route[-1])
+
+    total_distance = 0
+    for i in range(len(expanded_route) - 1):
+        from_customer = expanded_route[i]
+        to_customer = expanded_route[i + 1]
+        total_distance += distance_matrix[from_customer][to_customer]
+    return total_distance
+
+'Calculates total distance for a given solution'
+def Calculate_total_distance(current_solution, distance_matrix):
+    total_distance = 0
+    for route in current_solution:
+        total_distance += Calculate_route_distance(route, distance_matrix)
+    return total_distance
+
+'Calculates the total demand for given route'
+def Route_demand(route, clusters, demands):
+    total_demand = 0
+    route = route[1:-1]
+    for cluster_id in route:
+        total_demand += demands[cluster_id]
+    return total_demand
+
+'Randomly uses one of the three Tweak Operators for new solution'
+def Tweak_solution(current_solution, clusters, demands, vehicle_capacity, distance_matrix, weights):
+    #tweak_operation = random.choices(["intra", "inter", "reorder"], weights = weights, k = 1)[0]
+    tweak_operation = random.choice(["intra", "inter", "reorder"])
+    if tweak_operation == "intra":
+        #print("Tweak Operator: intra")
+        new_solution = Intra_route(current_solution, clusters)
+    elif tweak_operation == "inter":
+        #print("Tweak Operator: inter")
+        new_solution = Inter_route(current_solution, clusters, demands, vehicle_capacity)
+    else:
+        #print("Tweak Operator: reorder")
+        new_solution = Cluster_reordering(current_solution, clusters, distance_matrix)
+    return new_solution
+
+'Tabu Search implementation (FIFO for the list)'
+def Tabu_search(initial_solution, clusters, demands, vehicle_capacity, distance_matrix, max_iterations, tabu_length, weights):
+    l = tabu_length
+    n = max_iterations
+
+    S = initial_solution
+    best_solution = S
+    best_solution_distance = Calculate_total_distance(best_solution, distance_matrix)
+    L = []
+    L.append(S)
+    for iteration in range(n):
+        if iteration % 100 == 0:
+            print(f"Iteration {iteration}")
+        if len(L) > l:
+            L.pop(0)
+        R = Tweak_solution(copy.deepcopy(S), clusters, demands, vehicle_capacity, distance_matrix, weights)
+        for _ in range(n - 1):
+            W = Tweak_solution(copy.deepcopy(S), clusters, demands, vehicle_capacity, distance_matrix, weights)
+            if W not in L and (Calculate_total_distance(W, distance_matrix) < Calculate_total_distance(R, distance_matrix) or R in L):
+                R = W
+        if R not in L:
+            S = R
+            L.append(R)
+        if Calculate_total_distance(S, distance_matrix) < best_solution_distance:
+            best_solution = S
+            best_solution_distance = Calculate_total_distance(best_solution, distance_matrix)
+    return best_solution, best_solution_distance
+
+'Tabu Search implementation (FIFO for list) and reset tabu list at startover'
+def Tabu_search_random_startover(initial_solution, clusters, demands, vehicle_capacity, distance_matrix, max_iterations, tabu_length, weights):
+    l = tabu_length
+    n = max_iterations
+    K = len(initial_solution)
+
+    S = initial_solution
+    best_solution = S
+    best_solution_distance = Calculate_total_distance(best_solution, distance_matrix)
+    L = []
+    L.append(S)
+    for iteration in range(n):
+        if iteration % 100 == 0 and iteration != 0:
+            print(f"Iteration {iteration}: Random Startover")
+            S = Random_initial_solution(nodes, clusters, demands, vehicle_capacity, K, distance_matrix)
+            L = [S]
+        if len(L) > l:
+            L.pop(0)
+        R = Tweak_solution(copy.deepcopy(S), clusters, demands, vehicle_capacity, distance_matrix, weights)
+        for _ in range(n - 1):
+            W = Tweak_solution(copy.deepcopy(S), clusters, demands, vehicle_capacity, distance_matrix, weights)
+            if W not in L and (Calculate_total_distance(W, distance_matrix) < Calculate_total_distance(R, distance_matrix) or R in L):
+                R = W
+        if R not in L:
+            S = R
+            L.append(R)
+        if Calculate_total_distance(S, distance_matrix) < best_solution_distance:
+            best_solution = S
+            best_solution_distance = Calculate_total_distance(best_solution, distance_matrix)
+    return best_solution, best_solution_distance
+
+############################################                MAIN                ############################################
+filename = "C:/Users/mcpud/OneDrive/Documenten/Maastricht University/Master/C.gvrp.txt"
+nodes, clusters, demands, vehicle_capacity, num_vehicles, distance_matrix = Read_gvrp_file(filename)
+loop = 0
+while loop < 4:
     """
-    Read a .gvrp file and extract all relevant information for the CluVRP problem
-
-    Parameters:
-    filename (str): Path to the .gvrp file
-
-    Returns:
-    dict: Dictionary containing all problem parameters with variable names matching the document
+    Since we implemented a local-search, tabu search to be more precise, method. We start by constructing an initialization method.
+    - "Initial_solution()" is used to construct a solution that picks a cluster via nearest neighbor and uses the order of customers 
+    given in the instance for the visiting order.
+    - "Random_initial_solution()" is used to construct a random solution. This means choosing a random cluster and then assigning
+    it to a random vehicle.
     """
-    # Initialize variables
-    V = []  # Set of vertices (nodes)
-    V0 = None  # Depot node
-    E = []  # Set of edges
-    K = []  # Set of vehicles
-    Q = None  # Vehicle capacity
-    R = []  # Set of clusters
-    Cr = {}  # Dictionary mapping cluster index to list of customers in that cluster
-    q = {}  # Dictionary mapping customer index to demand
-
-    # Read the file
-    with open(filename, 'r') as f:
-        lines = f.readlines()
-
-    # Process header section
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-        if line.startswith('DIMENSION'):
-            num_nodes = int(line.split(':')[1].strip())
-        elif line.startswith('VEHICLES'):
-            num_vehicles = int(line.split(':')[1].strip())
-            K = list(range(num_vehicles))  # Create vehicle set
-        elif line.startswith('GVRP_SETS'):
-            num_clusters = int(line.split(':')[1].strip())
-        elif line.startswith('CAPACITY'):
-            Q = int(line.split(':')[1].strip())
-        elif line.startswith('NODE_COORD_SECTION'):
-            # Process node coordinates
-            i += 1
-            coords = {}
-            for j in range(num_nodes):
-                if i + j < len(lines):
-                    parts = lines[i + j].strip().split()
-                    if len(parts) >= 3:
-                        node_id = int(parts[0])
-                        x = float(parts[1])
-                        y = float(parts[2])
-                        coords[node_id] = [x, y]
-                        V.append(node_id)  # Add to vertex set
-            i += num_nodes - 1
-            # Assume first node is depot
-            V0 = V[0]
-        elif line.startswith('GVRP_SET_SECTION'):
-            # Process clusters
-            i += 1
-            for _ in range(num_clusters):
-                if i < len(lines):
-                    parts = lines[i].strip().split()
-                    cluster_id = int(parts[0])
-                    R.append(cluster_id)
-
-                    # Get customers in this cluster (excluding -1 terminator)
-                    customers = [int(node) for node in parts[1:] if node != '-1']
-                    Cr[cluster_id] = customers
-                    i += 1
-        elif line.startswith('DEMAND_SECTION'):
-            # Process demands
-            i += 1
-            print(i)
-            for j in range(num_clusters):
-                if i + j < len(lines):
-                    parts = lines[i + j].strip().split()
-                    print(parts)
-                    if len(parts) >= 2:
-                        cluster_id = int(parts[0])
-                        demand = int(parts[1])
-
-                        # Assign demand to all customers in this cluster
-                        if cluster_id in Cr:
-                            for customer in Cr[cluster_id]:
-                                q[customer] = demand
-                        else:
-                            print(f"Warning: Cluster {cluster_id} not found in Cr")
-
-                        q[cluster_id] = demand
-            i += num_clusters - 1
-        i += 1
-
-    d = pd.DataFrame(index=V)  # DataFrame assigning distance between any pair of nodes
-    # Create edges and calculate distances
-    for i in V:
-        for j in V:
-            if i == j:
-                d.loc[i, j] = 0.0
-            elif i != j:
-                E.append((i, j))
-                # Calculate Euclidean distance
-                x1, y1 = coords[i]
-                x2, y2 = coords[j]
-                distance = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
-                d.loc[i, j] = distance
-                d.loc[j, i] = distance
-
-    # In the CluVRP, depot is typically not in any customer cluster
-    # but is considered to be in its own special cluster r0
-    r0 = 0  # Use 0 for depot cluster (assuming clusters are numbered from 1)
-    # Make sure r0 is not already in R
-    while r0 in R:
-        r0 += 1
-    R.append(r0)
-    Cr[r0] = [V0]  # Create special cluster for depot
-
-    # Calculate the mean coordinates of every cluster
-    cluster_coordinates = {}
-    for i in Cr:
-        cluster = Cr[i]
-        coordinates = []
-        for customer in cluster:
-            coordinates.append(coords[customer])
-        coordinates = np.array(coordinates)
-        cluster_coordinates[i] = np.average(coordinates, axis=0).tolist()
-
-    # Calculate the average distance between each cluster
-    cluster_distances = pd.DataFrame(index=R)  # DataFrame assigning distance between any pair of clusters
-    for i in R:
-        for j in R:
-            if i == j:
-                cluster_distances.loc[i, j] = 0.0
-            elif i != j:
-                # Calculate Euclidean distance
-                x1, y1 = cluster_coordinates[i]
-                x2, y2 = cluster_coordinates[j]
-                distance = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
-                cluster_distances.loc[i, j] = distance
-                cluster_distances.loc[j, i] = distance
-
-    # Prepare final result
-    result = {
-        'V': V,  # Set of vertices including depot and customer nodes
-        'V0': V0,  # Depot node
-        'E': E,  # Set of edges
-        'K': K,  # Set of vehicles
-        'Q': Q,  # Vehicle capacity
-        'R': R,  # Set of clusters
-        'Cr': Cr,  # Mapping of cluster index to list of customers
-        'q': q,  # Mapping of customer index to demand
-        'd': d,  # Distance matrix (as a DataFrame)
-        'r0': r0,  # Cluster containing only the depot
-        'coords': coords,  # Store the coordinates for visualization if needed
-        'cluster_coordinates': cluster_coordinates, # Average coordinates of each cluster
-        'cluster_distances': cluster_distances # Distance matrix between average coordinates of each cluster (as a DataFrame)
-    }
-
-    return result
-
-def main():
-    # Change filename to desired file
-    filename = "/Users/yordivankruchten/Downloads/instances-set1/A.gvrp"
-    problem_data = read_gvrp_file(filename)
-    # print(f"Vertices: {problem_data['V']}")
-    # print(f"Depot node: {problem_data['V0']}")
-    # print(f"Edges: {problem_data['E']}")
-    # print(f"Vehicles: {problem_data['K']}")
-    # print(f"Vehicle capacity: {problem_data['Q']}")
-    # print(f"Clusters: {problem_data['R']}")
-    # print(f"Customer cluster index: {problem_data['Cr']}")
-    # print(f"Customer demand: {problem_data['q']}")
-    # print(f"Distance matrix {problem_data['d']}")
-    # print(f"Depot cluster: {problem_data['r0']}")
-    # print(f"Coordinates: {problem_data['coords']}")
-    # print(f"Cluster coordinates: {problem_data['cluster_coordinates']}")
-    # print(f"Distance matrix between clusters: {problem_data['cluster_distances']}")
-    return problem_data
-
-def results(problem_data, cluster_routes_per_vehicle, intra_cluster_routes):
-    """
-    Based on the cluster routes per vehicle and the intra-cluster routes,
-    the total routes per vehicle are calculated. Then, the total distances of
-    these routes are calculated.
-    """
-    vehicle_routes = {}
-    for vehicle in cluster_routes_per_vehicle:
-        vehicle_route = []
-        cluster_route = cluster_routes_per_vehicle[vehicle]
-        for cluster in cluster_route:
-            vehicle_route.extend(intra_cluster_routes[cluster])
-        vehicle_routes[vehicle] = vehicle_route
-        vehicle_routes[vehicle].append(1)  # End the vehicle route at the depot
-
-    vehicle_distances = {}
-    for vehicle in vehicle_routes:
-        distance = 0.0
-        vehicle_route = vehicle_routes[vehicle]
-        for i in range(len(vehicle_route) - 1):
-            customer = vehicle_route[i]
-            next_customer = vehicle_route[i + 1]
-            distance += problem_data['d'].loc[customer, next_customer]
-        vehicle_distances[vehicle] = float(distance)
-
-    return vehicle_routes, vehicle_distances
-
-def create_initial_solution(problem_data):
-    """
-    Assign clusters to vehicles by assigning the closest cluster to each vehicle's
-    current location. This is a greedy assignment of clusters to vehicles to create
-    an initial solution. This does not yet take into account vehicle capacities,
-    because the demand object is empty somehow. Once, this issue is fixed, it should
-    not be too difficult to implement this here. Subtract the total demand of a cluster
-    from the remaining capacity of a vehicle, and only add the closest cluster, if this
-    doesn't exceed the vehicle capacities. If it does, add the next closest cluster that
-    doesn't exceed vehicle capacities if any.
-    """
-    clusters_to_assign = problem_data['R']
-    cluster_routes_per_vehicle = {}
-    for i in problem_data['K']:
-        cluster_routes_per_vehicle[f"Vehicle {problem_data['K'][i]}"] = [problem_data['r0']]
-    while len(clusters_to_assign) > 0:
-        for i in cluster_routes_per_vehicle:
-            current_location = cluster_routes_per_vehicle[i][-1]
-            if current_location in clusters_to_assign:
-                clusters_to_assign.remove(current_location)
-            distances = {}
-            if len(clusters_to_assign) > 0:
-                for cluster in clusters_to_assign:
-                    distances[cluster] = problem_data['cluster_distances'].loc[current_location, cluster]
-                closest_cluster = min(distances, key=distances.get)
-                cluster_routes_per_vehicle[i].append(closest_cluster)
-                clusters_to_assign.remove(closest_cluster)
+    #initial_solution = Initial_solution(nodes, clusters, demands, vehicle_capacity, num_vehicles, distance_matrix)
+    #initial_solution_distance = Calculate_total_distance(initial_solution, distance_matrix)
+    #print("The initial solution is:")
+    #print(initial_solution)
+    #Print_solution(initial_solution, clusters)
+    #print(f", with total distance: {initial_solution_distance}")
+    random_initial_solution = Random_initial_solution(nodes, clusters, demands, vehicle_capacity, num_vehicles, distance_matrix)
+    random_initial_solution_distance = Calculate_total_distance(random_initial_solution, distance_matrix)
+    print("The initial solution is:")
+    print(random_initial_solution)
+    Print_solution(random_initial_solution, clusters)
+    print(f", with total distance: {random_initial_solution_distance}")
 
     """
-    Simple nearest-neighbor heuristic for finding a route within a cluster. At first, 
-    a random customer in a cluster is chosen. The route within this cluster starts at 
-    this random customer. Starting from this customer, the nearest neighbor is found 
-    and added to the route. This continues until all customers within a cluster are 
-    added to the route. This results in a dictionary of nearest-neighbor intra-cluster 
-    routes for all clusters that can be used for the initial solution.
+    Using the initial solution constructed via the method above, we start iteratively improving it. This is done via a tabu search.
+    The parameters are set for the iterations, tabu list length and the weights for the Tweak operators. It uses three types of
+    Tweak operators: Intra-route, Inter-route and Cluster reordering. 
     """
-    intra_cluster_routes = {}
-    for cluster in problem_data['Cr']:
-        route = []
-        customers = problem_data['Cr'][cluster]
-        first_customer = random.choice(customers)
-        route.append(first_customer)
-        customers.remove(first_customer)
-        while len(customers) > 0:
-            distances = {}
-            for customer in customers:
-                distances[customer] = problem_data['d'].loc[route[-1], customer]
-            next_customer = min(distances, key=distances.get)
-            route.append(next_customer)
-            customers.remove(next_customer)
-        intra_cluster_routes[cluster] = route
 
-    vehicle_routes, vehicle_distances = results(problem_data, cluster_routes_per_vehicle, intra_cluster_routes)
-
-    return cluster_routes_per_vehicle, intra_cluster_routes, vehicle_routes, vehicle_distances
-
-problem_data = main()
-initial_cluster_routes_per_vehicle, initial_intra_cluster_routes, initial_vehicle_routes, initial_vehicle_distances = create_initial_solution(problem_data)
-
-# print(f"Cluster routes per vehicle: {initial_cluster_routes_per_vehicle}")
-# print(f"Intra-cluster routes: {initial_intra_cluster_routes}")
-# print(f"Vehicle routes: {initial_vehicle_routes}")
-# print(f"Total distance per vehicle: {initial_vehicle_distances}")
-
-def tabu_str(route):
-    """
-    Create a unique string that defines a route to be stored in a tabu list.
-    """
-    tabu_str = '_'
-    for i in range(len(route)):
-        for j in route[i]:
-            tabu_str += f"{str(j)}_"
-    return tabu_str
-
-def tabu_search_intra_cluster_routes(initial_intra_cluster_routes, initial_vehicle_distances):
-    """
-    Optimize the initial solution by changing the intra-cluster routes. The initial instance
-    is the input. The function randomly picks a cluster and shuffles the order in which the customers
-    of that cluster are visited. If that decreases the total distance of the vehicles and this order
-    of customers was not yet in the tabu list, then the best known solution is updated. Right now,
-    there is not yet a maximum length to the tabu list. i represents how often the function randomly
-    picks a cluster to optimize. k represents how often it shuffles the order of customers within a cluster,
-    before accepting the best order. Note that this optimization only considers the order of customers
-    within a cluster, the so called intra-cluster routes. This function does not yet optimize the order
-    in which clusters are visisted or how the clusters are divided among the vehicles. These can be
-    implemented next and then combined to optimize the final result even more.
-    """
-    best_intra_cluster_routes = [[initial_intra_cluster_routes, sum(initial_vehicle_distances.values())]]
-    intra_cluster_routes = copy.deepcopy(initial_intra_cluster_routes)
-    problem_data = main()
-    i = 0
-    while i < 10000:
-        j = random.choice(problem_data['R'])
-        tabu_list = []
-        tabu_list.append(tabu_str(intra_cluster_routes))
-        k = 0
-        while k < 100:
-            random.shuffle(intra_cluster_routes[j])
-            if tabu_str(intra_cluster_routes) not in tabu_list:
-                tabu_list.append(tabu_str(intra_cluster_routes))
-                _, vehicle_distances = results(problem_data, initial_cluster_routes_per_vehicle, intra_cluster_routes)
-                if sum(vehicle_distances.values()) < best_intra_cluster_routes[-1][-1]:
-                    best_intra_cluster_routes.append([intra_cluster_routes, sum(vehicle_distances.values())])
-            k += 1
-        i += 1
-    return best_intra_cluster_routes
-
-best_intra_cluster_routes = tabu_search_intra_cluster_routes(initial_intra_cluster_routes, initial_vehicle_distances)
-print(f"Total distance at initial solution: {best_intra_cluster_routes[0][-1]}")
-print(f"Total distance after Tabu Search heuristic on intra-cluster routes: {best_intra_cluster_routes[-1][-1]}")
+    iterations = 10000
+    tabu_list_length = 10
+    w_1, w_2, w_3 = 0.6, 0.2, 0.2
+    weights = [w_1, w_2, w_3]
+    best_solution, best_solution_distance = Tabu_search_random_startover(random_initial_solution, clusters, demands, vehicle_capacity, distance_matrix, iterations, tabu_list_length, weights)
+    print(f"The best found solution with {iterations} iterations is:")
+    Print_solution(best_solution, clusters)
+    print(f", with a total distance of: {best_solution_distance} and weights {weights}")
+    loop += 1
